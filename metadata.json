@@ -1,0 +1,6 @@
+
+{
+  "name": "Custody Calendar Tracker",
+  "description": "A secure, user-based calendar application to track child custody schedules for Eden between Connar and Emma. Requires a username and PIN to log in. Provides monthly, quarterly, and yearly totals and allows exporting the schedule to PDF. Data is saved to a central database and synced across devices.",
+  "requestFramePermissions": []
+}
