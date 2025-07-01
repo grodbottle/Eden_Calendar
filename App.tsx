@@ -1,16 +1,15 @@
-
-import React, { useState, useMemo, useCallback } from 'react';
+import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import { useCustodyData } from './hooks/useCustodyData';
-import { useAuth } from './hooks/useAuth';
-import { calculateTotals, getQuarterDateKeys, getYearDateKeys, getMonthDateKeys } from './utils/dateUtils';
+import { calculateTotals, getQuarterDateKeys, getYearDateKeys } from './utils/dateUtils';
 import { MONTH_NAMES, QUARTERS, CUSTODIAN_NAMES, CUSTODIAN_COLORS } from './constants';
 import { Custodian } from './types';
 import MonthView from './components/MonthView';
 import TotalsDisplay from './components/TotalsDisplay';
-import Auth from './components/Auth';
 
+// This is to inform TypeScript about the global variables from the script tags
 declare const jspdf: any;
 declare const html2canvas: any;
+declare const lucide: any;
 
 const ExportLegend: React.FC = () => (
     <div className="p-4 bg-white dark:bg-gray-800 rounded-lg shadow-md">
@@ -30,26 +29,30 @@ const ExportLegend: React.FC = () => (
 
 
 const App: React.FC = () => {
-  const { currentUser, login, register, logout, error: authError, isLoading: isAuthLoading } = useAuth();
-  const { custodyData, updateDayCustodian, updateDayNotes, isLoaded } = useCustodyData(currentUser);
-
   const [currentYear, setCurrentYear] = useState(new Date().getFullYear());
   const [selectedMonth, setSelectedMonth] = useState<number | null>(new Date().getMonth());
+  const { custodyData, updateDayCustodian, isLoaded } = useCustodyData();
   const [isExporting, setIsExporting] = useState(false);
 
+  useEffect(() => {
+    // Initialize Lucide icons on component mount and update
+    if (typeof lucide !== 'undefined') {
+      lucide.createIcons();
+    }
+  });
+
   const yearlyTotals = useMemo(() => {
-    if (!currentUser) return { [Custodian.Connar]: 0, [Custodian.Emma]: 0, [Custodian.Unassigned]: 0 };
     const yearKeys = getYearDateKeys(currentYear);
     return calculateTotals(custodyData, yearKeys);
-  }, [custodyData, currentYear, currentUser]);
+  }, [custodyData, currentYear]);
 
   const quarterlyTotals = useMemo(() => {
-    if (!currentUser || !custodyData) return [];
     return QUARTERS.map((_, index) => {
         const quarterKeys = getQuarterDateKeys(currentYear, index);
         return calculateTotals(custodyData, quarterKeys);
     });
-  }, [custodyData, currentYear, currentUser]);
+  }, [custodyData, currentYear]);
+
 
   const handleExport = useCallback(async (type: 'month' | 'quarter' | 'year', index?: number) => {
     if (typeof jspdf === 'undefined' || typeof html2canvas === 'undefined') {
@@ -64,22 +67,28 @@ const App: React.FC = () => {
     const margin = 10;
     const contentWidth = pdfWidth - margin * 2;
 
-    const addContentToPdf = async (elementId: string, pageTitle: string, isFirstPage: boolean) => {
+    const addContentToPdf = async (elementId: string, pageTitle: string) => {
         const content = document.getElementById(elementId);
         if (!content) return;
         
-        await new Promise(resolve => setTimeout(resolve, 100)); // allow render
+        // Wait for lucide icons to render if necessary
+        await new Promise(resolve => setTimeout(resolve, 100));
         
         const canvas = await html2canvas(content, { scale: 2, backgroundColor: '#f9fafb' });
         const imgData = canvas.toDataURL('image/png');
         const imgHeight = (canvas.height * contentWidth) / canvas.width;
-
-        if (!isFirstPage) {
-             pdf.addPage();
-        }
+        let heightLeft = imgHeight;
+        let position = margin + 5;
         
-        pdf.text(pageTitle, margin, margin);
-        pdf.addImage(imgData, 'PNG', margin, margin + 10, contentWidth, imgHeight);
+        const addNewPage = () => {
+          if (pdf.internal.getNumberOfPages() > 1 || pdf.internal.getCurrentPageInfo().pageNumber > 1) {
+              pdf.addPage();
+          }
+          pdf.text(pageTitle, margin, margin);
+        }
+
+        addNewPage();
+        pdf.addImage(imgData, 'PNG', margin, position, contentWidth, imgHeight);
     };
 
     const exportContainer = document.getElementById('pdf-export-container');
@@ -87,15 +96,16 @@ const App: React.FC = () => {
 
     try {
         if (type === 'month' && selectedMonth !== null) {
-            await addContentToPdf(`export-month-${selectedMonth}`, `Custody Report: ${MONTH_NAMES[selectedMonth]} ${currentYear}`, true);
+            await addContentToPdf(`export-month-${selectedMonth}`, `Custody Report: ${MONTH_NAMES[selectedMonth]} ${currentYear}`);
         } else if (type === 'quarter' && index !== undefined) {
-             await addContentToPdf(`export-quarter-${index}`, `Custody Report: ${QUARTERS[index].name} ${currentYear}`, true);
+             await addContentToPdf(`export-quarter-${index}`, `Custody Report: ${QUARTERS[index].name} ${currentYear}`);
         } else if (type === 'year') {
              for (let i = 0; i < QUARTERS.length; i++) {
-                await addContentToPdf(`export-quarter-${i}`, `Custody Report: ${QUARTERS[i].name} ${currentYear}`, i === 0);
+                if(i > 0) pdf.addPage();
+                await addContentToPdf(`export-quarter-${i}`, `Custody Report: ${QUARTERS[i].name} ${currentYear}`);
              }
         }
-        pdf.save(`custody-report-${currentUser}-${type}-${currentYear}${index !== undefined ? '-' + (QUARTERS[index].name) : ''}.pdf`);
+        pdf.save(`custody-report-${type}-${currentYear}${index !== undefined ? '-' + (index+1) : ''}.pdf`);
     } catch (e) {
         console.error("Error exporting PDF:", e);
         alert("An error occurred while exporting the PDF.");
@@ -103,16 +113,13 @@ const App: React.FC = () => {
         if (exportContainer) exportContainer.style.display = 'none';
         setIsExporting(false);
     }
-  }, [currentYear, selectedMonth, currentUser, custodyData]);
+  }, [currentYear, selectedMonth]);
 
-  if (!currentUser) {
-    return <Auth onLogin={login} onRegister={register} error={authError} isLoading={isAuthLoading} />;
-  }
-  
+
   if (!isLoaded) {
     return (
-      <div className="flex items-center justify-center min-h-screen bg-gray-100 dark:bg-gray-900">
-        <div className="text-2xl font-semibold text-gray-700 dark:text-gray-200">Loading Calendar for {currentUser}...</div>
+      <div className="flex items-center justify-center min-h-screen">
+        <div className="text-2xl font-semibold text-gray-700 dark:text-gray-200">Loading Calendar...</div>
       </div>
     );
   }
@@ -120,7 +127,7 @@ const App: React.FC = () => {
   const renderYearView = () => (
     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
         {MONTH_NAMES.map((name, index) => {
-            const monthKeys = getMonthDateKeys(currentYear, index);
+            const monthKeys = getQuarterDateKeys(currentYear, Math.floor(index/3)).filter(k => new Date(k).getMonth() === index);
             const totals = calculateTotals(custodyData, monthKeys);
             return (
                 <div key={name} className="bg-white dark:bg-gray-800 p-4 rounded-lg shadow-md hover:shadow-xl transition-shadow cursor-pointer" onClick={() => setSelectedMonth(index)}>
@@ -152,18 +159,14 @@ const App: React.FC = () => {
         )}
       <div className="max-w-7xl mx-auto">
         <header className="mb-8">
-          <div className="flex justify-between items-center mb-4">
-              <div className="text-sm">Logged in as: <strong className="font-bold">{currentUser}</strong></div>
-              <button onClick={logout} className="text-sm text-indigo-600 dark:text-indigo-400 hover:underline">Logout</button>
-          </div>
           <h1 className="text-4xl font-extrabold text-center text-gray-900 dark:text-white mb-2">Eden's Custody Calendar</h1>
           <div className="flex items-center justify-center space-x-4 my-4">
             <button onClick={() => setCurrentYear(y => y - 1)} className="p-2 rounded-full bg-white dark:bg-gray-700 shadow-md hover:bg-gray-200 dark:hover:bg-gray-600 transition">
-              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-chevron-left"><path d="m15 18-6-6 6-6"/></svg>
+              <i data-lucide="chevron-left" className="w-6 h-6"></i>
             </button>
             <h2 className="text-3xl font-bold text-gray-800 dark:text-gray-100">{currentYear}</h2>
             <button onClick={() => setCurrentYear(y => y + 1)} className="p-2 rounded-full bg-white dark:bg-gray-700 shadow-md hover:bg-gray-200 dark:hover:bg-gray-600 transition">
-              <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-chevron-right"><path d="m9 18 6-6-6-6"/></svg>
+              <i data-lucide="chevron-right" className="w-6 h-6"></i>
             </button>
           </div>
         </header>
@@ -172,17 +175,11 @@ const App: React.FC = () => {
           {selectedMonth !== null ? (
             <div>
               <button onClick={() => setSelectedMonth(null)} className="flex items-center space-x-2 mb-6 text-blue-600 dark:text-blue-400 hover:underline">
-                <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="lucide lucide-arrow-left"><path d="m12 19-7-7 7-7"/><path d="M19 12H5"/></svg>
+                <i data-lucide="arrow-left" className="w-6 h-6"></i>
                 <span>Back to Year View</span>
               </button>
-              <MonthView 
-                year={currentYear} 
-                month={selectedMonth} 
-                custodyData={custodyData} 
-                onDayClick={updateDayCustodian} 
-                onUpdateNotes={updateDayNotes}
-              />
-              <button onClick={() => handleExport('month')} className="mt-4 px-4 py-2 bg-indigo-600 text-white rounded-lg shadow hover:bg-indigo-700 transition" disabled={isExporting}>Export Month PDF</button>
+              <MonthView year={currentYear} month={selectedMonth} custodyData={custodyData} onDayClick={updateDayCustodian} />
+              <button onClick={() => handleExport('month')} className="mt-4 px-4 py-2 bg-indigo-600 text-white rounded-lg shadow hover:bg-indigo-700 transition">Export Month PDF</button>
             </div>
           ) : (
             <div>
@@ -193,8 +190,8 @@ const App: React.FC = () => {
                      <TotalsDisplay totals={yearlyTotals} title={`${currentYear} Yearly Totals`} />
                 </div>
                  <div className="flex flex-wrap gap-4 mb-8">
-                    {QUARTERS.map((q, i) => <button key={q.name} onClick={() => handleExport('quarter', i)} className="px-4 py-2 bg-green-600 text-white rounded-lg shadow hover:bg-green-700 transition" disabled={isExporting}>Export {q.name} PDF</button>)}
-                    <button onClick={() => handleExport('year')} className="px-4 py-2 bg-purple-600 text-white rounded-lg shadow hover:bg-purple-700 transition" disabled={isExporting}>Export Full Year PDF</button>
+                    {QUARTERS.map((q, i) => <button key={q.name} onClick={() => handleExport('quarter', i)} className="px-4 py-2 bg-green-600 text-white rounded-lg shadow hover:bg-green-700 transition">Export {q.name} PDF</button>)}
+                    <button onClick={() => handleExport('year')} className="px-4 py-2 bg-purple-600 text-white rounded-lg shadow hover:bg-purple-700 transition">Export Full Year PDF</button>
                 </div>
                 {renderYearView()}
             </div>
@@ -202,19 +199,20 @@ const App: React.FC = () => {
         </main>
       </div>
         
+      {/* Hidden container for PDF export rendering */}
       <div id="pdf-export-container" style={{ display: 'none', position: 'absolute', left: '-9999px', width: '800px' }}>
           {selectedMonth !== null && (
             <div id={`export-month-${selectedMonth}`} className="p-4 bg-gray-50">
-              <MonthView year={currentYear} month={selectedMonth} custodyData={custodyData} onDayClick={() => {}} onUpdateNotes={() => {}} isExportMode={true} />
+              <MonthView year={currentYear} month={selectedMonth} custodyData={custodyData} onDayClick={() => {}} isExportMode={true} />
               <div className="mt-4"><ExportLegend /></div>
             </div>
           )}
-          {quarterlyTotals.length > 0 && QUARTERS.map((q, i) => (
+          {QUARTERS.map((q, i) => (
              <div key={`export-q-${i}`} id={`export-quarter-${i}`} className="p-4 bg-gray-50">
                  <h2 className="text-3xl font-bold text-center mb-4">{q.name} {currentYear} Report</h2>
                  <div className="space-y-6">
                     {q.months.map(m => (
-                        <MonthView key={m} year={currentYear} month={m} custodyData={custodyData} onDayClick={() => {}} onUpdateNotes={() => {}} isExportMode={true} />
+                        <MonthView key={m} year={currentYear} month={m} custodyData={custodyData} onDayClick={() => {}} isExportMode={true} />
                     ))}
                  </div>
                  <div className="mt-4 grid grid-cols-2 gap-4">
